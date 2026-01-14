@@ -12,14 +12,37 @@
 //
 
 #include <iostream>
+#include <GLFW/glfw3.h>
+#define GLFW_EXPOSE_NATIVE_WAYLAND
+#include <GLFW/glfw3native.h>
 #include "Engine.h"
+#include "WaylandSurface.h"
+
 
 int main() {
-    std::cout << "[Editor] Red Plasma Engine: Starting..." << std::endl;
+    glfwInit();
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    GLFWwindow* window = glfwCreateWindow(1280, 720, "Red Plasma Editor", nullptr, nullptr);
 
+    std::cout << "[Editor] Red Plasma Engine: Starting..." << std::endl;
     RedPlasma::Engine engine;
 
-    engine.Run();
+    void* wl_display = glfwGetWaylandDisplay();
+    void* wl_surface = glfwGetWaylandWindow(window);
+
+    auto* mySurface = new RedPlasma::WaylandSurface(wl_display, wl_surface);
+
+
+    engine.AttachWindow(mySurface);
+
+    while (!glfwWindowShouldClose(window)) {
+        glfwPollEvents();
+        engine.Run();
+    }
 
     std::cout << "[Editor] Red Plasma Engine: Closing..." << std::endl;
+    glfwDestroyWindow(window);
+    glfwTerminate();
+
+    return 0;
 }

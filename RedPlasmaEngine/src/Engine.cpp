@@ -16,13 +16,10 @@
 #include "VulkanGraphicsDevice.h"
 
 namespace RedPlasma {
-    Engine::Engine() {
+
+    Engine::Engine() : m_IsRunning(false), m_GraphicsDevice(nullptr){
         std::cout << "Red Plasma Engine: Initializing..." << std::endl;
         m_GraphicsDevice = new VulkanGraphicsDevice();
-        if (m_GraphicsDevice->Initialize() == 0) {
-            m_IsRunning = true;
-        }
-
     }
 
     Engine::~Engine() {
@@ -34,7 +31,25 @@ namespace RedPlasma {
         }
     }
 
-    void Engine::Run() {
+    int Engine::AttachWindow(IWindowSurface* windowHandle) {
+        if (m_GraphicsDevice == nullptr || windowHandle == nullptr) {
+            std::cout << "Red Plasma Engine: Failed to attach window!" << std::endl;
+            return -1;
+        }
+
+        m_GraphicsDevice->AddExtension(windowHandle->GetRequiredExtensions());
+
+        if (m_GraphicsDevice->Initialize() == 0) {
+            if (m_GraphicsDevice->CreateSurface(windowHandle) == 0) {
+                m_IsRunning = true;
+                return 0;
+            }
+
+        }
+        return -1;
+    }
+
+    void Engine::Run() const {
         if (m_IsRunning) {
             std::cout << "Red Plasma Engine: Running..." << std::endl;
         }

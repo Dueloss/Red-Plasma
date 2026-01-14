@@ -15,10 +15,17 @@
 #define REDPLASMA_IGRAPHICSDEVICE_H
 #include <vector>
 
+#include "IWindowSurface.h"
+
 namespace RedPlasma {
 
     struct Vertex {
         float x, y, z;
+    };
+
+    struct NativeWindowHandle{
+        void* window;
+        void* display;
     };
 
     class IGraphicsDevice {
@@ -28,10 +35,12 @@ namespace RedPlasma {
         virtual int Initialize() = 0;
         virtual int Shutdown() = 0;
 
+        virtual void AddExtension(const std::vector<const char*> &extensions) = 0;
+
+        virtual int CreateSurface(IWindowSurface* windowHandle) = 0;
+
         virtual int UploadMeshData(const std::vector<Vertex>& vertices) = 0;
-
         virtual int DrawFrame() = 0;
-
         virtual const char* GetDeviceName() = 0;
     };
 }

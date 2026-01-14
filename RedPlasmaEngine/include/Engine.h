@@ -14,13 +14,17 @@
 #ifndef REDPLASMA_ENGINE_H
 #define REDPLASMA_ENGINE_H
 namespace RedPlasma {
+    class IWindowSurface;
     class IGraphicsDevice;
+    struct NativeWindowHandle;
+
     class Engine {
     public:
         Engine();
         ~Engine();
 
-        void Run();
+        int AttachWindow(IWindowSurface* windowHandle);
+        void Run() const;
 
     private:
         bool m_IsRunning;
