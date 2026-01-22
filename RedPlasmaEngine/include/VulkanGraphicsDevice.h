@@ -31,7 +31,15 @@ namespace RedPlasma {
         int CreateSurface(IWindowSurface* windowHandle) override;
         void AddExtension(const std::vector<const char*> &extensions) override;
         int InitializeDevice(IWindowSurface* surface);
-        int setupSwapchain(IWindowSurface* surface);
+        int SetupSwapChain(IWindowSurface* surface);
+        int CreateImageViews();
+        int CreateRenderPass();
+        int CreateGraphicsPipeline();
+        int CreateFramebuffers();
+        int CreateCommandPool();
+        int CreateSyncObjects();
+        int RecordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+        void WaitIdle();
 
     private:
         VkInstance m_Instance = VK_NULL_HANDLE;
@@ -43,6 +51,22 @@ namespace RedPlasma {
         VkSurfaceKHR m_Surface = VK_NULL_HANDLE;
         std::vector<const char*> m_EnableExtension;
         int m_graphicsFamilyIndex = 0;
+        VkSwapchainKHR m_SwapChain = VK_NULL_HANDLE;
+        std::vector<VkImage> m_SwapChainImages;
+        VkFormat m_SwapChainImageFormat;
+        VkExtent2D m_SwapChainExtent;
+        std::vector<VkImageView> m_SwapChainImageViews;
+        VkRenderPass m_RenderPass = VK_NULL_HANDLE;
+        VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
+        VkPipeline m_GraphicsPipeline = VK_NULL_HANDLE;
+        std::vector<VkFramebuffer> m_Framebuffers;
+        int m_PresentFamilyIndex = -1;
+        VkCommandPool m_CommandPool = VK_NULL_HANDLE;
+        std::vector<VkCommandBuffer> m_CommandBuffers;
+
+        VkSemaphore m_ImageAvailableSemaphore;
+        VkSemaphore m_RenderFinishedSemaphore;
+        VkFence m_InFlightFence = VK_NULL_HANDLE;
     };
 } // RedPlasma
 

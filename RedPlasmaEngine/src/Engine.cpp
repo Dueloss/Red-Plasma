@@ -51,8 +51,11 @@ namespace RedPlasma {
 
     void Engine::Run() const {
         if (m_IsRunning) {
-            std::cout << "Red Plasma Engine: Running..." << std::endl;
+            m_GraphicsDevice->DrawFrame();
         }
+    }
 
+    void Engine::Shutdown() {
+        m_GraphicsDevice->Shutdown();
     }
 }

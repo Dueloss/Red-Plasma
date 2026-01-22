@@ -16,7 +16,7 @@
 #define GLFW_EXPOSE_NATIVE_WAYLAND
 #include <GLFW/glfw3native.h>
 #include "Engine.h"
-#include "WaylandSurface.h"
+#include "../../RedPlasmaEngine/include/WaylandSurface.h"
 
 
 int main() {
@@ -31,7 +31,7 @@ int main() {
     void* wl_display = glfwGetWaylandDisplay();
     void* wl_surface = glfwGetWaylandWindow(window);
 
-    auto* mySurface = new RedPlasma::WaylandSurface(wl_display, wl_surface);
+    auto* mySurface = new RedPlasma::WaylandSurface(wl_display, wl_surface, width, height);
     mySurface->UpdateSize(width, height);
 
     engine.AttachWindow(mySurface);
@@ -40,7 +40,7 @@ int main() {
         glfwPollEvents();
         engine.Run();
     }
-
+    engine.Shutdown();
     std::cout << "[Editor] Red Plasma Engine: Closing..." << std::endl;
     glfwDestroyWindow(window);
     glfwTerminate();

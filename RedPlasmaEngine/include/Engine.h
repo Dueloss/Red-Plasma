@@ -25,7 +25,7 @@ namespace RedPlasma {
 
         int AttachWindow(IWindowSurface* windowHandle);
         void Run() const;
-
+        void Shutdown();
     private:
         bool m_IsRunning;
         IGraphicsDevice* m_GraphicsDevice;
