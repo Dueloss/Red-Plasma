@@ -11,17 +11,14 @@
 // Created by Dueloss on 12.01.2026.
 //
 
-#include "../include/VulkanGraphicsDevice.h"
+#include "VulkanGraphicsDevice.h"
 
 #include <algorithm>
-#include <limits>
 
-#include "../include/IWindowSurface.h"
+#include "renderer/IWindowSurface.h"
 #include <iostream>
 #include <vector>
 #include <fstream>
-
-#include "VulkanWindowSurface.h"
 
 namespace RedPlasma {
     struct QueueFamilyIndices {

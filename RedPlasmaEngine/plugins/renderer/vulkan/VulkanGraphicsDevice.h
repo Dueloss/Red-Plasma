@@ -13,7 +13,7 @@
 
 #ifndef REDPLASMA_VULKANGRAPHICSDEVICE_H
 #define REDPLASMA_VULKANGRAPHICSDEVICE_H
-#include "IGraphicsDevice.h"
+#include "renderer/IGraphicsDevice.h"
 #include <vulkan/vulkan.h>
 
 namespace RedPlasma {

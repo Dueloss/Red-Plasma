@@ -15,8 +15,8 @@
 #include <GLFW/glfw3.h>
 #define GLFW_EXPOSE_NATIVE_WAYLAND
 #include <GLFW/glfw3native.h>
-#include "Engine.h"
-#include "../../RedPlasmaEngine/include/WaylandSurface.h"
+#include "core/Engine.h"
+#include "plugins/renderer/vulkan/platform/linux/wayland/WaylandSurface.h"
 
 
 int main() {

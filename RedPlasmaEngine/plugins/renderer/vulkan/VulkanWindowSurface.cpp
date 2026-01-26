@@ -10,7 +10,7 @@
 //
 // Created by Dueloss on 15.01.2026.
 //
-#include "../include/VulkanWindowSurface.h"
+#include "VulkanWindowSurface.h"
 
 namespace RedPlasma {
 

@@ -13,7 +13,7 @@
 
 #ifndef REDPLASMA_VULKANWINDOWSURFACE_H
 #define REDPLASMA_VULKANWINDOWSURFACE_H
-#include "IWindowSurface.h"
+#include "renderer/IWindowSurface.h"
 #include <vulkan/vulkan.h>
 namespace RedPlasma {
     class VulkanWindowSurface : public IWindowSurface {

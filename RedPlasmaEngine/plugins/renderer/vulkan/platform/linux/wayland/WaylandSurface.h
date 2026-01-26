@@ -13,7 +13,7 @@
 
 #ifndef REDPLASMA_WAYLANDSURFACE_H
 #define REDPLASMA_WAYLANDSURFACE_H
-#include "IWindowSurface.h"
+#include "renderer/IWindowSurface.h"
 #include <vulkan/vulkan_wayland.h>
 
 namespace RedPlasma {
