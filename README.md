@@ -46,7 +46,7 @@ Mozilla Public License 2.0 (MPL-2.0). See `LICENSE`. In short: modify Red Plasma
 
 **1. Clone the repo**
 ```bash
-git clone https://github.com/yourusername/red_plasma.git
+git clone https://github.com/Dueloss/Red-Plasma.git
 cd red_plasma
 ```
 
