@@ -1,27 +1,141 @@
 # Contracts
 
-These are the concrete, binding technical rules every module in Red Plasma must follow. Where `PHILOSOPHY.md` explains *why*, this document defines *what*, precisely enough to implement against.
+These are the concrete, binding technical rules every plugin and module in Red Plasma must follow. Where `PHILOSOPHY.md` explains *why*, this document defines *what*, precisely enough to implement against.
 
-## 1. Module lifecycle (5-slot table)
+---
 
-Every module — regardless of what it does — exposes exactly five functions, always, in a fixed order. No module may omit any of them. Unused functions return `0` (success) immediately and do nothing.
+## 0. Two-tier system: engine plugins and modules
+
+Red Plasma has two distinct tiers of extensible binary, each with its own contract:
+
+| | Engine plugins | Modules |
+|---|---|---|
+| **Purpose** | Pure engine infrastructure — no gameplay, no game-developer-facing capability | Game engine functionality — what game developers write and use |
+| **Contract** | 3-slot: `init`, `call`, `delete` | 6-slot: `init`, `run`, `recall`, `update`, `delete`, `interrupt` |
+| **Loaded by** | Bootstrap loader (compiled in — the only hardcoded piece) | Module loader (itself an engine plugin) |
+| **Load order** | Fixed, hardcoded sequence before anything else | Priority-sorted, manifest-driven |
+| **Game loop** | Never participates | Two-pass hot loop (`run` then `recall`) |
+| **Examples** | Allocator, sort, handle manager, logger, module loader | Optimizer, renderer, windowing, physics, audio, input |
+
+Both tiers use the **same manifest shape** — magic number, contract version, contract-shape hash, dependencies, author metadata, and a `kind` field (`plugin` or `module`) so the bootstrap loader knows which contract to apply. Same validation path, same hard-reject policy.
+
+---
+
+## 0a. Engine plugin lifecycle (3-slot table)
+
+Every engine plugin exposes exactly three functions, always, in a fixed order. Unused functions return `0` (success) immediately and do nothing.
+
+| Slot | Name | Meaning |
+|---|---|---|
+| 0 | `init` | One-time setup. Called by the bootstrap loader in the fixed boot sequence. |
+| 1 | `call` | Explicit invocation by whatever needs the plugin's service. Not driven by any loop — called on demand. The sort plugin's `call` is invoked once to sort the module arrays; an allocator's `call` is invoked whenever something needs memory. |
+| 2 | `delete` | Teardown. Called during engine shutdown in reverse boot order. |
+
+Engine plugins **never participate in the game loop** — they have no `run`, `recall`, `update`, or `interrupt`. They are infrastructure the engine calls explicitly, not participants in the tick.
+
+**Bootstrap sequence:** the IOS implementation (compiled in — the only piece that touches OS APIs directly) loads a fixed, known list of plugins in a hardcoded order before anything else starts. Plugin loading itself uses `rp_load_library`/`rp_get_symbol` — IOS calls, never raw OS calls:
+
+1. Allocator plugin(s)
+2. Logger plugin
+3. Sort plugin
+4. Handle manager plugin
+5. Module loader plugin ← from this point, full module loading is available
+
+After step 5, the module loader takes over and loads all modules via the normal manifest/priority/two-array system.
+
+---
+
+## 0b. IOS — Interface Operating System
+
+The IOS is the only place in the entire Red Plasma codebase where OS-specific code lives. It sits between Red Plasma and the actual OS, mapping Red Plasma's own vocabulary of system calls to whatever the underlying platform requires.
+
+**Folder structure:**
+```
+os/
+├── irp_os.h   — OS interface declarations (rp_* functions), no implementation
+├── linux/     — Linux IOS implementation
+├── windows/   — Windows IOS implementation (future)
+├── macos/     — macOS IOS implementation (future)
+└── 16bit/     — 16-bit bare metal IOS implementation (future)
+```
+
+`os/irp_os.h` contains only **declarations** — the `rp_*` function signatures that everything else in Red Plasma calls. No OS knowledge, no implementation. Each OS subfolder contains one complete implementation of those declarations, compiled in at build time for the target platform.
+
+**The hard rule:** nothing outside `os/` may make a direct OS call. No `fopen`, `dlopen`, `clock_gettime`, `CreateFile`, `pthread_create`, or any other OS API anywhere in engine core, plugins, or modules. Every OS operation goes through an `rp_*` IOS function. A grep for raw OS calls outside `os/` should return zero hits — any hit is a bug, not a design choice.
+
+**IOS function vocabulary (initial — grows as needed):**
+
+| Function | Purpose |
+|---|---|
+| `rp_load_library(path)` | Load a dynamic library (`dlopen` / `LoadLibrary`) |
+| `rp_get_symbol(lib, name)` | Resolve a symbol from a loaded library (`dlsym` / `GetProcAddress`) |
+| `rp_unload_library(lib)` | Unload a dynamic library |
+| `rp_get_time()` | Current time as an integer (nanoseconds/ticks, platform-dependent unit) |
+| `rp_file_open(path, mode)` | Open a file |
+| `rp_file_read(file, buf, len)` | Read from a file |
+| `rp_file_write(file, buf, len)` | Write to a file |
+| `rp_file_close(file)` | Close a file |
+| `rp_console_write(msg)` | Write to console/terminal output |
+| `rp_thread_create(fn, arg)` | Create a thread |
+| `rp_thread_join(thread)` | Wait for a thread to finish |
+| `rp_mutex_create()` | Create a mutex |
+| `rp_mutex_lock(mutex)` | Lock a mutex |
+| `rp_mutex_unlock(mutex)` | Unlock a mutex |
+| `rp_signal_handle(sig, fn)` | Register a signal/interrupt handler |
+
+This list is explicitly **not exhaustive** — the IOS is a never-ending update file. When Red Plasma needs to interact with something new at the OS level, a new `rp_*` function is added. This is expected and accepted; the discipline is keeping each function a thin mapping with no logic, no state, and no decisions.
+
+**The capability implication:** the IOS vocabulary for a given target defines what Red Plasma can do on that target. If `rp_thread_create` isn't implemented in the 16-bit IOS, threading isn't available there. If `rp_file_write` isn't implemented, persistence isn't available. The IOS list is implicitly a capability document for each port.
+
+**Porting Red Plasma to a new OS** means implementing the IOS for that target in a new `os/<target>/` folder and compiling it in. Nothing else in the codebase changes.
+
+---
+
+Every module — regardless of what it does — exposes exactly six functions, always, in a fixed order. No module may omit any of them. Unused functions return `0` (success) immediately and do nothing.
 
 | Slot | Name        | Meaning |
 |------|-------------|---------|
 | 0    | `init`      | One-time setup. Allocate via the appropriate allocator module, register with the handle manager if needed, resolve dependencies on other modules. |
-| 1    | `run`       | Scheduled, per-tick execution. Driven by the engine's main loop at the current fixed Hz. |
-| 2    | `update`    | Reactive execution — called when external state has changed and the module needs to resync its internals. Not on a fixed schedule. |
-| 3    | `delete`    | Teardown counterpart to `init`. Frees what it allocated, releases handles it owns. |
-| 4    | `interrupt` | Emergency/priority override — stop normal flow and react immediately. Hardware fault lines, OS-level signals (e.g. window close), or software-level forced events (e.g. a multiplayer server forcing a client resync). |
+| 1    | `run`       | Called once per tick, first pass — before any other module's `recall`. The optimizer module uses this to record its start timestamp. Most modules do their primary per-tick work here. |
+| 2    | `recall`    | Called once per tick, second pass — after every module's `run` has completed. The optimizer module uses this to record its end timestamp, calculate elapsed time, update the EMA, and yield until the next tick begins. Most modules leave this as a no-op returning 0. |
+| 3    | `update`    | Reactive execution — called when external state has changed and the module needs to resync its internals. Not on a fixed schedule. |
+| 4    | `delete`    | Teardown counterpart to `init`. Frees what it allocated, releases handles it owns. |
+| 5    | `interrupt` | Emergency/priority override — stop normal flow and react immediately. Hardware fault lines, OS-level signals (e.g. window close), or software-level forced events (e.g. a multiplayer server forcing a client resync). |
 
-**Rule:** the engine always calls all five slots on every module without checking capability flags. A module declaring "I don't support X" and then implementing it later without updating that declaration is considered a safety hazard (particularly for hardware-facing modules) — so there is no such declaration. The cost of calling a no-op is negligible compared to the cost (and risk) of checking a table to decide whether to call it.
+**Rule:** the engine always calls all six slots on every module without checking capability flags. The cost of calling a no-op is negligible compared to the cost (and risk) of checking a table to decide whether to call it.
+
+**The main loop shape:**
+```
+while running:
+    for ptr in all_modules:    ptr.run()    // wait flag checked after each
+    for ptr in recall_modules: ptr.recall() // wait flag checked after each
+```
+
+**Two-array optimization:** the engine maintains two flat pointer arrays, built once at load time:
+
+| Array | Contents | Sorted by |
+|---|---|---|
+| `all_modules` | Pointer to every loaded module | `run_priority` descending |
+| `recall_modules` | Pointer to modules declaring `uses_recall: true` | `recall_priority` descending |
+
+The hot loop walks each array in order — pure pointer iteration, no branching, no priority checks at runtime. All ordering decisions happen once at load time and are never revisited unless a module is loaded or unloaded.
+
+**Arrays hold pointers only** — they do not own the modules. Actual module data lives wherever the module loader placed it. Removing a module means removing its pointer from the array(s), nothing else.
+
+**Sorting is itself a module.** The sort module is responsible for ordering both arrays before the first tick. The default implementation uses **heapsort** — in-place, no extra memory required, guaranteed O(n log n) worst case (no pathological inputs unlike quicksort), predictable cost on any hardware. A constrained target can swap in a simpler sort (e.g. insertion sort, which is smaller in code size and faster on very small arrays). The sort module is a **core dependency** — it must run before any other module's `init`, since the arrays must be ordered before the first tick begins.
+
+**Priority is declared per-pass in the manifest** — two separate integer fields, higher number = higher priority (runs earlier in that pass). Separating them matters: the optimizer must be first in `run` (to stamp the tick start time) but last in `recall` (to stamp the end time after all other recall work is done, then yield — being first in recall would leave untimed work after it).
+
+
 
 ## 1a. Implementation language and ABI
 
-- The **engine core** (loop, module loader, handle manager, allocators) is implemented in **Rust**.
-- Every **module**, regardless of what it does, must expose its 5-slot table as a plain **C ABI** — `extern "C"` linkage, no C++ name mangling, no language-specific calling convention. This is the only common ground every systems language can reliably agree on, and it's what makes the module loader able to treat any module identically regardless of implementation language.
-- **Module authors may use any language they want internally** (C, C++, Rust, or otherwise), provided the exported boundary is C ABI compliant.
-- The engine core's memory-safety guarantees apply only to the core's own code. They do not, and cannot, extend across the FFI boundary into a module's internals. **Module authors are responsible for the safety and correctness of their own code.** Modules are expected to be reviewed/audited before being trusted in a build — Red Plasma does not claim to guarantee module-level safety it has no way to enforce.
+- The **engine core and bootstrap loader** are implemented in **Rust**.
+- Every **engine plugin** must expose its 3-slot table as a plain **C ABI**.
+- Every **module** must expose its 6-slot table as a plain **C ABI**.
+- C ABI applies to both tiers — `extern "C"` linkage, no C++ name mangling, no language-specific calling convention. This is the only common ground every systems language can reliably agree on.
+- **Authors of both plugins and modules may use any language internally** (C, C++, Rust, or otherwise), provided the exported boundary is C ABI compliant.
+- The engine core's memory-safety guarantees apply only to the core's own code. They do not, and cannot, extend across the FFI boundary. **Plugin and module authors are responsible for the safety and correctness of their own code.** All are expected to be reviewed/audited before being trusted in a build.
 
 ## 1b. Coding style
 
@@ -42,6 +156,8 @@ The engine core follows standard idiomatic **Rust naming conventions** (the same
 - **C-ABI exported function names** (every module's lifecycle table and manifest entry point) use `snake_case` regardless of the module's internal implementation language, matching standard C convention for exported symbols — e.g. `get_module_manifest`, `module_init`.
 - **Visibility** (public vs. private) is expressed through Rust's `pub` keyword and module structure, not through a naming prefix or suffix.
 - This convention applies to the **engine core**. Modules written in other languages are free to follow that language's own idioms internally, as long as their exported C-ABI symbols still use `snake_case` at the boundary.
+- **Naming prefixes declare ownership and origin.** Every prefix used in Red Plasma must have a glossary entry — no undocumented prefixes, ever. See `docs/GLOSSARY.md` for the current prefix table. Function and variable names do the descriptive work; prefixes do the ownership work.
+- **Abbreviations, acronyms, prefixes, and project-specific terms must be added to `docs/GLOSSARY.md`.** If you introduce a new one anywhere in Red Plasma — code, comments, or documentation — add it before submitting. **If you are unsure whether something needs a glossary entry — add it.** The cost of an unnecessary entry is one line; the cost of a missing one is every developer who has to go hunting.
 
 ## 2. Function return contract
 
@@ -92,40 +208,87 @@ Modules should provide a way to translate their own codes to a human-readable st
 
 ## 5. Timing and the game loop
 
-- All loop timing is stored as **integers** (e.g. nanoseconds/microseconds in a `uint64_t` on modern hardware, scaled down to smaller integer types on constrained hardware) — never floating point.
-- The loop runs at a **fixed Hz**, but that Hz is **self-tuning**:
-  - Each session, the actual time the loop body takes is measured.
-  - That measurement is combined with the previous session's average using an exponential moving average with weight 0.5: `new_average = (old_average + new_measurement) / 2`, implemented as a bit shift (`>> 1`), never a true division.
-  - The resulting average is **persisted across sessions** (written on shutdown, read on next launch).
-  - Within a single session, the Hz is **held fixed** once read at startup — it does not change mid-session. This keeps physics/simulation deterministic for the duration of a run, while still letting the engine adapt to the hardware it's on, session over session.
-- **First launch** (no prior average exists) uses a **developer-defined fixed Hz** as the starting point. Session-mined auto-calibration (using real playtest data to seed the first-ever value) is a planned future enhancement, not part of the initial implementation.
-- **Division is not banned**, but is restricted to setup/calibration time (e.g. converting a target Hz into a fixed interval once, at startup). The per-frame hot path should only ever use add/subtract/compare operations.
-- Recurring expensive calculations elsewhere in the loop or related math should prefer precomputed lookup tables over runtime calculation, consistent with the engine's general philosophy.
+The engine core loop is intentionally minimal — it knows nothing about timing, Hz, or optimization. Its entire job is:
+
+1. Call `run` on every loaded module in order
+2. After each `run`, check the module's **wait flag** — if set, block until `run` returns before moving to the next module
+3. Repeat
+
+The engine does not measure time, does not know what Hz it is running at, and does not know what "waiting" means underneath. All of that complexity lives in the **optimizer module**.
+
+### 5a. The optimizer module
+
+The optimizer module owns everything related to loop timing:
+
+- An internal timer (OS clock, hardware register, or whatever the target provides — entirely invisible to the engine core)
+- The EMA self-tuning calculation
+- Persisted Hz across sessions (written on `delete`, read on `init`)
+- The decision of whether and how long to yield each tick
+
+From the engine core's perspective, the optimizer is just another module whose `run` happens to take some time before returning. The engine has no awareness that any sleeping or timing is occurring.
+
+**Timing rules (internal to the optimizer module):**
+- All timing values stored as **integers** — nanoseconds/microseconds in a `u64` on modern hardware, scaled to smaller types on constrained targets. Never floating point.
+- Hz is **self-tuning via EMA**: `new_average = (old_average + measured) >> 1` (bit-shift divide-by-two, no true division).
+- The learned average is **persisted across sessions** and **held fixed within a session** — physics/simulation stays deterministic per run, while the engine adapts to hardware over time.
+- **First launch** uses a developer-defined fixed Hz. Session-mined auto-calibration is a planned future enhancement.
+- Division is restricted to setup time only (e.g. Hz → interval conversion once at `init`). The per-tick hot path uses only add/subtract/compare/bit-shift.
+- Swappable per hardware target — a 16-bit implementation uses a hardware timer register, possibly millisecond resolution, no file-based persistence. Same contract, completely different internals.
+
+### 5b. The wait flag
+
+Every module has a **wait flag** — a boolean the engine core checks after calling `run`. If set, the loop waits for `run` to return before proceeding to the next module. If not set, the loop moves on immediately.
+
+| Source | Behaviour |
+|---|---|
+| **Manifest declaration** (`always_wait`) | Static default — set once at load time, seeds the runtime flag. Auditable at load time before any code runs. |
+| **Runtime override** | The module can change its own flag per tick at runtime. One cheap boolean check per module per tick; negligible cost even if never changed. |
+
+The hybrid approach is deliberate: the manifest declaration makes the default auditable and predictable; the runtime override allows dynamic behaviour (e.g. "block this tick but not the next") without requiring a separate mechanism.
+
+**The optimizer module sets `always_wait: true` in its manifest** — it always blocks, because its entire purpose is to control how long a tick takes. This is the mechanism that makes "the engine runs as fast as it can and the optimizer decides when to continue" work without the engine needing any special knowledge of timing.
+
+**Other modules that may legitimately use the wait flag:**
+- An audio module syncing to a buffer boundary
+- Any hardware-facing module that must complete before the next tick can safely proceed
+- Any module using the threading module internally that needs its async work to finish before returning
+
+**Threading note:** if a module does async work via the threading module, it still simply does not return from `run` until that work is done. How it waits internally (spinning, sleeping, thread signal) is the module's own business — the loop sees the same thing either way.
+
+
 
 ## 6. Events / subscriber system
 
 - A generic publish/subscribe mechanism lives in the engine core. Any module can subscribe to events raised by another module (e.g. a window's `onResize`/`onConfigure` event) rather than each module inventing its own ad-hoc callback registration style.
 - Used for, at minimum: window resize/configure notifications, and (planned) handle lifecycle notifications.
 
-## 7. Module loading
+## 7. Loading — plugins and modules
 
-- Modules are compiled as shared libraries (`.so` on the primary target, Fedora/Linux).
-- Dependency declaration lives in the module manifest (§7a), validated at load time, before `init` is called.
-- Mechanism for the lifecycle table itself is **not yet finalized** — see `DESIGN_DECISIONS.md` and `ROADMAP.md`. The intended direction is an assembler-style lookup table: a module exposes one fixed entry point that returns a table of function pointers (the 5-slot lifecycle table at minimum), avoiding repeated string-based symbol lookups after initial load.
+- Both engine plugins and modules are compiled as **dynamic libraries** — the OS-specific format (`.so` on Linux, `.dylib` on macOS, `.dll` on Windows) is an implementation detail owned entirely by the bootstrap loader. Everything above the bootstrap loader refers only to "load this plugin/module," never to a specific file format or OS API.
+- The **bootstrap loader** (the only compiled-in piece) owns all OS-specific dynamic library loading — `dlopen`/`dlsym` on Linux, `LoadLibrary`/`GetProcAddress` on Windows, or whatever the target platform requires. Swapping targets means swapping the bootstrap loader's loading implementation, nothing else.
+- On constrained targets with no dynamic loading support, plugins and modules may be statically linked at compile time — the same contract applies, only the loading mechanism changes.
+- **Engine plugins** live in the `plugins/` folder, loaded by the bootstrap loader in a fixed hardcoded sequence.
+- **Modules** live in the `modules/` folder, loaded by the module loader plugin after bootstrap completes, using the manifest/priority/two-array system.
+- Dependency declaration lives in the manifest (§7a), validated before `init` is called on either tier.
 
-## 7a. Module manifest
+## 7a. Manifest
 
-Before the engine touches a module's lifecycle table, it must validate the module via a manifest, exposed through a **known, fixed exported function** (e.g. `get_module_manifest()`) — never as a separate sidecar file. See `DESIGN_DECISIONS.md` for why a sidecar was rejected.
-
-The manifest contains:
+Both engine plugins and modules expose a manifest through a **known, fixed exported function** (`get_manifest()`) — never as a separate sidecar file. The same manifest shape applies to both tiers.
 
 | Field | Purpose |
 |---|---|
-| **Magic number** | A fixed constant identifying the file as a genuine Red Plasma module at all, checked first, before any other validation is attempted. |
-| **Contract version** | A single incrementing integer. The engine has one contract version it expects; the module declares the one it was built against. |
-| **Contract-shape hash** *(optional, cheap insurance)* | A hash of the expected function table shape, computed at build time — catches accidental drift (e.g. a miscompiled table) even when the declared version number matches. |
-| **Dependencies** | A list of other modules (by name/identifier, optionally with a minimum contract version) this module requires to be loaded first. Checked at load time, before `init` is called. |
-| **Author/writer metadata** | Descriptive only. Supports the audit trail (see `PHILOSOPHY.md` §9) — does not gate loading. |
+| **Magic number** | Fixed constant identifying a genuine Red Plasma binary. Checked first, before anything else. |
+| **`kind`** | `plugin` or `module` — tells the loader which contract (3-slot or 6-slot) to apply. Hard reject if kind doesn't match what the loader expects at that stage. |
+| **Contract version** | Single incrementing integer. Engine expects one version; binary declares what it was built against. Hard reject on mismatch. |
+| **Contract-shape hash** *(optional)* | Hash of the expected function table shape — catches accidental drift even when version matches. |
+| **Dependencies** | List of other plugins/modules required to be loaded first. |
+| **`always_wait`** | *(modules only)* Boolean — engine blocks on `run`/`recall` until they return. Seeds runtime wait flag. Default: `false`. |
+| **`uses_recall`** | *(modules only)* Boolean — adds module to `recall_modules` array. Performance routing hint, not capability flag. Default: `false`. |
+| **`run_priority`** | *(modules only)* Integer, higher = earlier in `run` pass. Anchors: 1000 optimizer, 800 platform, 600 systems, 400 gameplay, 200 rendering, 1–199 debug/tooling. |
+| **`recall_priority`** | *(modules only)* Integer, higher = earlier in `recall` pass. Separate from `run_priority`. Only meaningful if `uses_recall: true`. |
+| **Author/writer metadata** | Descriptive only. Supports audit trail — does not gate loading. |
+
+
 
 **Dependency resolution policy:** if a declared dependency is not already loaded, the engine treats this the same as any other manifest validation failure — **hard reject**, the module does not load, a clear error code is returned identifying the missing dependency. The engine does not attempt to auto-load dependencies on a module's behalf; load order is the responsibility of whatever is orchestrating module loading (the engine's startup sequence, or a game/application's own init code), not something modules silently trigger in each other.
 

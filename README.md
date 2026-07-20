@@ -42,11 +42,48 @@ See `PHILOSOPHY.md` for the full reasoning.
 
 Mozilla Public License 2.0 (MPL-2.0). See `LICENSE`. In short: modify Red Plasma's own source files and distribute them, and those changes must be shared under MPL. Build your own modules/plugins or games against Red Plasma's interfaces, and you're free to license that work however you like, including fully closed/proprietary.
 
+## Getting started
+
+**1. Clone the repo**
+```bash
+git clone https://github.com/yourusername/red_plasma.git
+cd red_plasma
+```
+
+**2. Run the setup script**
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+This installs the pre-commit hook. After this, every commit automatically sorts `docs/GLOSSARY.md` and checks for raw OS calls outside `os/`.
+
+**3. Install Rust** (if not already installed)
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source $HOME/.cargo/env
+rustup component add clippy
+```
+
+**4. Build**
+```bash
+cargo build
+```
+
+## Dependencies
+
+**To build Red Plasma:**
+- Rust (install via `rustup` — see rustup.rs)
+
+**For development tooling:**
+- Python 3 (pre-commit hooks, glossary sorting, dev scripts)
+
 ## Documentation
 
 - `docs/PHILOSOPHY.md` — the design philosophy and guiding principles behind every decision.
-- `docs/CONTRACTS.md` — the concrete technical contracts every module must follow.
-- `docs/DESIGN_DECISIONS.md` — the reasoning and current status of each major subsystem.
+- `docs/CONTRACTS.md` — the concrete technical contracts every plugin and module must follow.
+- `docs/DESIGN_DECISIONS.md` — the reasoning and current status of each major architectural choice.
 - `docs/ROADMAP.md` — what's being built, in what order.
+- `docs/GLOSSARY.md` — shorthand, abbreviations, and project-specific terms explained plainly.
 - `LICENSE` — full MPL-2.0 text.
 

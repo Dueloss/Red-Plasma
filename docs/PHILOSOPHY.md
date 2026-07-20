@@ -43,7 +43,7 @@ Every function returns a real error/status code, not a boolean. Codes are tiered
 Whoever creates a resource owns it and is responsible for destroying it. Cross-module access to something you don't own goes through a managed indirection (the handle manager), not a raw shared pointer — turning a class of crashes (use-after-free) into a normal, handleable error code instead.
 
 ### 7. Treat interrupts as real, even in software
-Hardware-facing modules may one day need genuine interrupt handling (fault lines, emergency stop equivalents). Rather than adding that capability only when hardware support arrives, every module's contract includes an interrupt path from the start — usually a no-op, always present, never something that can be silently undeclared and forgotten.
+Hardware-facing modules may one day need genuine interrupt handling (fault lines, emergency stop equivalents). Rather than adding that capability only when hardware support arrives, every module's contract includes an interrupt path from the start — usually a no-op, always present, never something that can be silently undeclared and forgotten. The full module contract is six slots: `init`, `run`, `recall`, `update`, `delete`, `interrupt` — always all six, no capability flags, unused slots return 0.
 
 ### 8. Open source the engine, keep games and modules free
 MPL-2.0 was chosen specifically so that improvements to Red Plasma itself flow back, while developers building modules or games against it keep full freedom over their own licensing.
@@ -54,3 +54,21 @@ The engine core is written in **Rust**, specifically because the core owns the p
 Every module, regardless of implementation language, exposes a plain **C ABI** at its boundary — this is a hard requirement, not a preference, because it's the only ABI every mainstream systems language (C, C++, Rust, and others) can reliably agree on. Inside that boundary, a module author is free to use any language they want.
 
 Rust's safety guarantees apply to the engine core's own code. They do **not** and **cannot** extend across the FFI boundary into a module written in C, C++, or any other language — raw pointers crossing that boundary are inherently unverifiable from the core's side. Module authors are responsible for the safety and correctness of the code they submit. Modules are expected to be audited before being trusted, the same way any native plugin in any ecosystem would be — Red Plasma does not claim or imply a safety guarantee it cannot enforce.
+
+### 10. All OS contact is owned by the IOS — nothing else touches the OS directly
+Red Plasma defines its own OS-agnostic vocabulary of system calls (`rp_file_open`, `rp_load_library`, `rp_get_time`, etc.) — the **IOS (Interface Operating System)**. The IOS sits between Red Plasma and the actual OS, mapping Red Plasma's calls to whatever the underlying platform needs. It is the only place in the entire codebase where OS-specific code lives.
+
+This is a hard rule, not a guideline: **nothing outside `os/` may make a direct OS call**. No `fopen`, no `dlopen`, no `clock_gettime`, no `CreateFile` anywhere in engine core, plugins, or modules. Every OS operation goes through IOS. A grep for raw OS calls outside `os/` should return zero hits — any hit is a bug.
+
+The IOS is a **never-ending update file** — whenever Red Plasma needs to interact with something new at the OS level, the IOS grows a new function. This is accepted and expected. Every serious cross-platform system has this file; Red Plasma just names it honestly and keeps it in one place. The discipline is keeping the IOS thin: pure mapping, no logic, no state, no decisions — just `rp_*` call in, OS call out.
+
+Porting Red Plasma to a new OS means implementing the IOS for that target. Nothing else changes.
+
+### 11. Help your fellow developers — maintain the glossary
+Red Plasma's documentation uses a lot of abbreviations, acronyms, and project-specific terms. If you introduce a new one — in code, comments, or documentation — add it to `docs/GLOSSARY.md` before submitting. This applies to contributors at every level, from engine core changes to new modules.
+
+**If you are unsure whether something needs a glossary entry — add it.** The cost of an unnecessary entry is one line. The cost of a missing one is every developer who has to go hunting. When in doubt, always add it.
+
+**Naming prefixes follow the same rule.** Every prefix used in Red Plasma must have a glossary entry — no undocumented prefixes, ever. Prefixes declare ownership and origin (`rp_` for IOS calls, `rpvk_` for the Vulkan renderer module, and so on). A prefix is meaningless without its glossary entry; with it, it becomes a navigational tool that tells a reader exactly where something comes from. Function and variable names do the descriptive work; prefixes do the ownership work — both matter, both must be documented.
+
+Clear language is part of the architecture too.

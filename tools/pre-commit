@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""
+Red Plasma pre-commit hook.
+
+Runs automatically before every git commit. Does two things:
+  1. Sorts all tables in docs/GLOSSARY.md alphabetically by first column.
+  2. Checks that no raw OS calls exist outside the os/ folder.
+
+Install:
+  cp tools/pre-commit .git/hooks/pre-commit
+  chmod +x .git/hooks/pre-commit
+
+Dependencies: Python 3 (no third-party packages required).
+"""
+
+import os
+import re
+import sys
+import subprocess
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+GLOSSARY_PATH = "docs/GLOSSARY.md"
+
+# Raw OS calls that must never appear outside os/
+# Add new ones here if a new OS API is ever used in the IOS
+BANNED_OUTSIDE_OS = [
+    "fopen", "fclose", "fread", "fwrite",
+    "dlopen", "dlsym", "dlclose",
+    "clock_gettime", "gettimeofday",
+    "CreateFile", "LoadLibrary", "GetProcAddress", "FreeLibrary",
+    "QueryPerformanceCounter", "QueryPerformanceFrequency",
+    "pthread_create", "pthread_join", "pthread_mutex_lock",
+    "pthread_mutex_unlock", "pthread_mutex_init", "pthread_mutex_destroy",
+    "CreateThread", "CreateMutex", "WaitForSingleObject",
+    "signal", "sigaction",
+    "malloc", "calloc", "realloc", "free",
+    "printf", "fprintf", "puts",
+]
+
+# File extensions to scan for OS call violations
+SCAN_EXTENSIONS = {".rs", ".c", ".cpp", ".h", ".hpp"}
+
+# Folders exempt from the OS call check
+EXEMPT_FOLDERS = {"os"}
+
+# ---------------------------------------------------------------------------
+# Step 1 — Sort GLOSSARY.md tables
+# ---------------------------------------------------------------------------
+
+def sort_glossary():
+    """Sort every markdown table in GLOSSARY.md alphabetically by first column."""
+    if not os.path.exists(GLOSSARY_PATH):
+        print(f"[pre-commit] Warning: {GLOSSARY_PATH} not found, skipping sort.")
+        return True
+
+    with open(GLOSSARY_PATH, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    lines = content.splitlines(keepends=True)
+    result = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Detect start of a markdown table (header row: | col | col | ...)
+        if re.match(r"^\s*\|", line) and i + 1 < len(lines) and re.match(r"^\s*\|[-| :]+\|", lines[i + 1]):
+            header = line
+            separator = lines[i + 1]
+            i += 2
+
+            # Collect table body rows
+            body_rows = []
+            while i < len(lines) and re.match(r"^\s*\|", lines[i]):
+                body_rows.append(lines[i])
+                i += 1
+
+            # Sort body rows by the first column (strip pipes and whitespace)
+            def first_column(row):
+                parts = row.strip().strip("|").split("|")
+                if parts:
+                    # Strip markdown bold markers and whitespace for sorting
+                    return re.sub(r"\*\*|`", "", parts[0]).strip().lower()
+                return ""
+
+            body_rows.sort(key=first_column)
+
+            result.append(header)
+            result.append(separator)
+            result.extend(body_rows)
+        else:
+            result.append(line)
+            i += 1
+
+    new_content = "".join(result)
+
+    if new_content != content:
+        with open(GLOSSARY_PATH, "w", encoding="utf-8") as f:
+            f.write(new_content)
+        # Stage the updated glossary so the sorted version is included in the commit
+        subprocess.run(["git", "add", GLOSSARY_PATH], check=True)
+        print(f"[pre-commit] Sorted tables in {GLOSSARY_PATH} and staged changes.")
+    else:
+        print(f"[pre-commit] {GLOSSARY_PATH} already sorted.")
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — Check for raw OS calls outside os/
+# ---------------------------------------------------------------------------
+
+def check_os_calls():
+    """
+    Scan all staged source files outside os/ for raw OS API calls.
+    Fails the commit if any are found.
+    """
+    # Get list of staged files
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"],
+        capture_output=True, text=True
+    )
+    staged_files = result.stdout.splitlines()
+
+    violations = []
+
+    for filepath in staged_files:
+        # Only scan source files
+        _, ext = os.path.splitext(filepath)
+        if ext not in SCAN_EXTENSIONS:
+            continue
+
+        # Skip files inside exempt folders
+        parts = filepath.replace("\\", "/").split("/")
+        if parts[0] in EXEMPT_FOLDERS:
+            continue
+
+        if not os.path.exists(filepath):
+            continue
+
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            for line_num, line in enumerate(f, start=1):
+                for banned in BANNED_OUTSIDE_OS:
+                    # Match as a word boundary to avoid false positives
+                    if re.search(rf"\b{re.escape(banned)}\b", line):
+                        violations.append((filepath, line_num, banned, line.rstrip()))
+
+    if violations:
+        print("\n[pre-commit] ERROR: Raw OS calls found outside os/")
+        print("All OS-specific calls must go through the IOS (rp_* functions).")
+        print("See docs/PHILOSOPHY.md principle 10 and docs/CONTRACTS.md §0b.\n")
+        for filepath, line_num, call, line in violations:
+            print(f"  {filepath}:{line_num} — '{call}' found")
+            print(f"    {line.strip()}\n")
+        print("Fix: replace the raw OS call with the appropriate rp_* IOS function.")
+        print("If no rp_* equivalent exists yet, add it to os/irp_os.h in  first.\n")
+        return False
+
+    print("[pre-commit] No raw OS calls found outside os/ — clean.")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def main():
+    print("[pre-commit] Running Red Plasma pre-commit checks...\n")
+
+    glossary_ok = sort_glossary()
+    os_calls_ok = check_os_calls()
+
+    print()
+    if glossary_ok and os_calls_ok:
+        print("[pre-commit] All checks passed.")
+        sys.exit(0)
+    else:
+        print("[pre-commit] Commit blocked — fix the issues above and try again.")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

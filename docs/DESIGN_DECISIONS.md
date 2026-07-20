@@ -4,13 +4,39 @@ This document records the reasoning behind each major decision, including altern
 
 ---
 
+## IOS — Interface Operating System
+
+**Decision:** All OS-specific code lives in one place — the `os/` folder. Red Plasma defines its own vocabulary of system functions (`rp_*`) in `os/irp_os.h in ` (declarations only, no subfolder). Each OS target has its own implementation folder (`os/linux/`, `os/windows/`, etc.) that maps those `rp_*` calls to real OS APIs. Nothing outside `os/` is permitted to make a direct OS call — ever.
+
+**Why a named IOS rather than ad-hoc abstraction:** every cross-platform system has a file (or files) where OS-specific code lives. Red Plasma makes it explicit, names it, and enforces it structurally rather than by convention. "It's in `os/` or it shouldn't exist" is auditable by grep — any raw OS call outside `os/` is a bug with a clear location to fix it.
+
+**Why it's a never-ending update file and that's fine:** the IOS grows whenever Red Plasma needs something new from the OS. This is accepted and expected — the alternative (pretending OS interaction is finite and complete) is worse. The discipline is keeping each IOS function a pure thin mapping: `rp_*` call in, OS call out, no logic, no state, no decisions. If business logic appears in the IOS, it's in the wrong place.
+
+**Why compiled in rather than a plugin:** the IOS has the same bootstrapping problem as the bootstrap loader — you can't load the IOS using the IOS. It must exist before anything else. Compiling it in is the only option, and it replaces the need for a separate "bootstrap loader" concept — the IOS implementation *is* the bootstrap layer for its target.
+
+**Porting cost:** implementing `os/<target>/` for a new OS is the complete cost of a port. Engine core, plugins, and modules are untouched. For a constrained target like 16-bit hardware, IOS functions that can't be supported (e.g. `rp_thread_create`) simply aren't implemented — the capability gap is visible in the IOS rather than hidden in scattered ifdefs across the codebase.
+
+---
+
+**Decision:** Red Plasma has two distinct tiers of extensible binary, each with its own contract and purpose.
+
+**Engine plugins (3-slot: `init`, `call`, `delete`)** — pure engine infrastructure with no gameplay or game-developer-facing capability. Loaded by the bootstrap loader (the only piece compiled directly into the engine core) in a fixed hardcoded sequence before anything else. Examples: allocator, logger, sort, handle manager, module loader. Never participate in the game loop. Swappable without recompiling — drop a dynamic library in the plugins folder.
+
+**Modules (6-slot: `init`, `run`, `recall`, `update`, `delete`, `interrupt`)** — what game developers write and use. Loaded by the module loader plugin after bootstrap completes, via the manifest/priority/two-array system. Examples: optimizer, renderer, windowing, physics, audio, input.
+
+**Why split instead of one contract:** engine plugins have a bootstrapping problem — the allocator must exist before anything can allocate memory, the sort plugin must exist before arrays can be sorted, the module loader must exist before modules can be loaded. These things can't use the full module contract because the infrastructure that contract depends on doesn't exist yet when they load. A minimal 3-slot contract for the bootstrap phase solves this without special-casing anything in the engine core.
+
+**Why both tiers are dynamically loaded:** the "drop a file in a folder" model was specifically preserved for engine plugins despite the bootstrap complexity — the bootstrap loader is the only hardcoded piece, and it simply looks for a known fixed list of plugin names in the plugins folder. No recompile needed to swap the allocator, sort algorithm, or any other engine infrastructure. The OS-specific loading mechanism (`dlopen` on Linux, `LoadLibrary` on Windows, or equivalent) is owned entirely by the bootstrap loader — everything above it is OS-agnostic.
+
+**Why the same manifest shape for both:** one validation path in the bootstrap loader rather than two different ones to maintain. The `kind` field (`plugin` or `module`) tells the loader which contract to apply after manifest validation passes.
+
+---
+
 ## Module system
 
-**Decision:** Everything is a module/plugin, including subsystems that are normally baked into an engine's core (renderer, windowing, memory allocation, handle/ownership management). Each module owns its internal complexity fully; the engine only ever interacts with a fixed, thin public contract (the 5-slot lifecycle table — see `CONTRACTS.md`).
+**Decision:** Everything game-developer-facing is a module. Each module owns its internal complexity fully; the engine only ever interacts with the 6-slot lifecycle contract and manifest. Foundational engine infrastructure is handled by plugins (see above).
 
-**Why:** This is the central differentiator for Red Plasma. It allows swapping not just things like "which physics library" but foundational pieces like the rendering API or even the OS windowing backend, without forking the engine. It also means hardware-specific concerns (allocator strategy, handle manager table size) can be addressed per-target without touching the rest of the engine.
-
-**Status:** Core contract defined. Loading mechanism and dependency declaration not yet finalized.
+**Why:** allows swapping not just "which physics library" but foundational pieces like the rendering API or even the OS windowing backend, without forking the engine. Hardware-specific concerns (allocator strategy, handle manager table size) can be addressed per-target via swappable plugins, without touching modules or the engine core.
 
 ---
 
@@ -82,25 +108,35 @@ This document records the reasoning behind each major decision, including altern
 
 ## Game loop and timing
 
-**Decision:** Fixed-Hz loop, but the Hz value itself is learned per machine: an exponential moving average (weight 0.5, implemented as a bit shift) of measured loop execution time, persisted across sessions, held fixed for the duration of any single session.
+**Decision:** The engine core loop is deliberately minimal — it knows nothing about timing, Hz, or optimization. It simply calls `run` on every loaded module in order, checks each module's wait flag, and repeats. All timing intelligence lives in the **optimizer module**.
 
-**Why this instead of the standard fixed-timestep-with-accumulator pattern:** the common pattern (see: "Fix Your Timestep") uses a constant tick rate chosen for determinism, with an accumulator handling variable frame rate. Red Plasma's goal is different — auto-tuning the *target* rate itself to the hardware it's running on, not just decoupling simulation from rendering. Holding the learned Hz fixed within a session (rather than continuously adjusting) was a deliberate correction during design — continuous mid-session adjustment would have undermined determinism for physics; reading the average once at startup and holding it for the session preserves both goals at once.
+**Why the engine core knows nothing about timing:** the original design had the core loop measuring execution time and doing EMA math itself. This was replaced when it became clear that timing is just another "module owns its own complexity" case — the timer mechanism varies wildly by hardware (OS syscall on desktop, hardware register on 16-bit), the math is self-contained, and the persistence is an internal concern. Moving it all into a module means the core loop is identical on every hardware target, and the optimizer module is what changes per platform. The engine core became: run modules, check flag, repeat.
 
-**Convergence behavior (accepted tradeoff):** with a 0.5-weight average, a single anomalous session (e.g. heavy background load) shifts the next session's value by half the gap, not all of it — recovery is geometric over a few sessions, not instant. Accepted as fine since the system is explicitly designed to "even out with time," not to be robust to a single bad data point instantly.
+**Why a wait flag instead of a special "yield" mechanism:** considered a dedicated yielding API the loop would call after all modules ran. Replaced by a generic per-module wait flag — a boolean the loop checks after every `run` call. The optimizer sets `always_wait: true` in its manifest, so the loop naturally blocks on it without knowing why. Any other module that needs "the loop pauses here" (audio buffer sync, hardware module, thread completion) gets the same mechanism for free. The engine needs no special cases.
 
-**First launch:** no prior average exists, so a developer-defined fixed Hz is used as the seed. A more sophisticated approach was discussed — mining real playtest/dev session logs to find the heaviest moment in the actual game and replaying it as a calibration pass on first launch — and was deliberately deferred. It requires additional infrastructure (a profiling/logging module for dev builds, an offline aggregation tool, a baked calibration asset shipped with the release build) that isn't worth building before the simple version is proven. Noted as a strong future direction, not lost.
+**Why a hybrid static/runtime flag:** the manifest `always_wait` declaration is auditable at load time (before any code runs), which matters for hardware-facing modules where a wrong declaration is dangerous. The per-tick runtime override allows dynamic behaviour without a separate mechanism. One cheap boolean check per module per tick — negligible cost even if never changed.
 
-**Hot path constraint:** loop timing is integer-only (scaled by target — large integers on modern hardware, smaller on constrained targets), and the hot path itself (every tick) only uses add/subtract/compare — no division, no floating point. Division is allowed but restricted to setup/calibration time (e.g. converting a target Hz to a fixed interval once).
+**Convergence behavior (accepted tradeoff):** with a 0.5-weight EMA, a single anomalous session shifts the next session's value by half the gap — recovery is geometric over a few sessions, not instant. Accepted as fine since the system is designed to "even out with time."
+
+**First launch:** developer-defined fixed Hz seeds the first value. Session-mined calibration (mining real playtest logs for the heaviest moment and replaying it) was discussed and deliberately deferred — strong future direction, not lost.
+
+**Hot path constraint:** loop timing inside the optimizer is integer-only (scaled by target), hot path uses only add/subtract/compare/bit-shift — no division, no floating point. Division restricted to `init`-time setup only.
 
 ---
 
 ## Module lifecycle contract
 
-**Decision:** Every module implements exactly five functions, always: `init`, `run`, `update`, `delete`, `interrupt`. Unused ones are no-ops returning success. No capability declaration/flags — the engine always calls all five on every module.
+**Decision:** Every module implements exactly six functions, always: `init`, `run`, `recall`, `update`, `delete`, `interrupt`. Unused ones are no-ops returning success. No capability declaration/flags — the engine always calls all six on every module.
 
-**Why no capability flags:** considered letting a module declare which of the five it actually implements so the engine could skip calling no-ops. Rejected specifically for hardware-facing modules: a module that declares "I don't use interrupt" and later has interrupt support added, without updating that declaration, could cause real hardware failures (the declaration goes stale silently). Calling a no-op unconditionally costs essentially nothing; checking a table to decide whether to call costs more and introduces a failure mode. Always-five-always-called wins on both safety and performance grounds.
+**Why `recall` was added:** the optimizer module needs to bracket the entire tick — record a start timestamp before any other module runs, then record an end timestamp after everything else has finished, calculate elapsed time, update the EMA, and yield. A single `run` call per module in sequence can't express this. Rather than building a dynamic "call me again" flag mechanism, `recall` was added as a fixed sixth slot: the loop does one full pass calling `run` on every module, then a second full pass calling `recall` on every module. The optimizer uses both; every other module leaves `recall` as a no-op. This is consistent with the same reasoning behind the original five slots — no capability flags, no "does this module support recall," just always call it.
 
-**Why `interrupt` exists at all in a software engine:** rooted directly in the PLC/automation background driving the overall philosophy — interrupts are a serious, well-understood, first-class concept in hardware control systems (emergency stop, fault lines). Since Red Plasma is explicitly meant to scale down to real hardware eventually, this path is included from the start rather than retrofitted later, even though most pure-software modules will leave it as a no-op. A software-level use case was also identified: a multiplayer server forcing an immediate client-side abort/resync.
+**Why two separate priority fields (`run_priority` and `recall_priority`):** a single priority number controlling both passes seems simpler but breaks the optimizer. The optimizer must be first in `run` (to stamp the tick start time before anything runs) but last in `recall` (to stamp the end time after all other recall work is done, then yield). Being first in recall would leave untimed work after it — a bottleneck that isn't measured. Separate integers let the optimizer declare high `run_priority` and low `recall_priority` without compromising either pass.
+
+**Why high number = high priority:** if low number meant highest priority (e.g. 1 = first), module authors would defensively assign 1 to everything "just to be safe," collapsing the system into noise. High number = high priority forces deliberate thought about where a module actually sits in the order.
+
+**Why sorting is a module:** the engine needs sorted pointer arrays before the first tick; *how* they get sorted is an implementation detail the core doesn't need to own. A constrained target may want insertion sort (tiny code size, fast on small arrays); a desktop build uses heapsort by default. The sort module is a core dependency — it must run before any other module's `init`. Default implementation is heapsort: in-place, no extra memory, guaranteed O(n log n) worst case, no pathological inputs unlike quicksort. Predictable cost on any hardware.
+
+**Why arrays hold pointers only:** modules are not owned by the arrays. The arrays are sorted at load time and walked in order by the hot loop — pure pointer iteration, nothing else. Removing a module means removing its pointer from the relevant array(s).
 
 ---
 
@@ -132,11 +168,11 @@ This document records the reasoning behind each major decision, including altern
 
 **Why hard reject instead of tolerant/lenient versioning:** the engine's own ABI is expected to change rarely and deliberately — this was an explicit design stance, not an assumption. Given that, a compatibility matrix (semver-style major/minor reasoning, "older module probably still works") adds real complexity to defend against a scenario that should be rare by design. A single exact-match check is simpler, matches the "fewer conditional paths, fewer silent failure modes" instinct already used for the always-call-all-five-slots rule, and fails loudly and immediately rather than letting a subtly incompatible module run.
 
-**Why an in-binary manifest, never a sidecar file:** this was the deciding factor, and it's a behavioral argument, not a technical one. A sidecar manifest file (e.g. `mymodule.manifest` next to `mymodule.so`) is easier to inspect without loading the binary — which sounds like a benefit for auditing, but actually undermines it: it gives a reviewer a plausible-looking shortcut (skim the manifest, see a reasonable version and author, move on) that bypasses actually reading the module's code. Since modules are explicitly trusted only after being audited (see `PHILOSOPHY.md` §9), the manifest mechanism itself must not make it easy to skip that audit. An in-binary manifest, accessible only by actually loading/inspecting the real module, has no such shortcut. This was a deliberate "make it hard to do it wrong" choice, prioritized over the sidecar's convenience.
+**Why an in-binary manifest, never a sidecar file:** this was the deciding factor, and it's a behavioral argument, not a technical one. A sidecar manifest file (e.g. `mymodule.manifest` next to the dynamic library) is easier to inspect without loading the binary — which sounds like a benefit for auditing, but actually undermines it: it gives a reviewer a plausible-looking shortcut (skim the manifest, see a reasonable version and author, move on) that bypasses actually reading the module's code. Since modules are explicitly trusted only after being audited (see `PHILOSOPHY.md` §9), the manifest mechanism itself must not make it easy to skip that audit. An in-binary manifest, accessible only by actually loading/inspecting the real binary, has no such shortcut. This was a deliberate "make it hard to do it wrong" choice, prioritized over the sidecar's convenience.
 
 **Why dependencies are declared in the manifest, not a separate mechanism:** dependency information has the same property the rest of the manifest exists to protect — it must be known and validated *before* a module is trusted enough to call `init` on. Putting it anywhere else would mean checking compatibility in one place and dependencies in another, for no real benefit. Folded into the same field set as version/hash/author, validated in the same pass, rejected with the same hard-reject policy.
 
-**Why the engine doesn't auto-load missing dependencies:** considered and rejected. Auto-loading would mean a module's manifest could implicitly trigger loading other arbitrary `.so` files at runtime, which both weakens the audit story (a reviewed module could pull in an unreviewed one without anyone choosing to load it) and adds real complexity (resolving load order, detecting circular dependencies). Instead, a missing dependency is just another hard-reject validation failure with a clear error code — load order is the explicit responsibility of whatever orchestrates startup, not something modules can trigger in each other.
+**Why the engine doesn't auto-load missing dependencies:** considered and rejected. Auto-loading would mean a module's manifest could implicitly trigger loading other arbitrary dynamic libraries at runtime, which both weakens the audit story (a reviewed module could pull in an unreviewed one without anyone choosing to load it) and adds real complexity (resolving load order, detecting circular dependencies). Instead, a missing dependency is just another hard-reject validation failure with a clear error code — load order is the explicit responsibility of whatever orchestrates startup, not something modules can trigger in each other.
 
 **Why circular dependencies are caught before any module initializes, not at runtime:** drawn directly from real, painful prior experience with Linux package management and game modding ecosystems, where two mods/packages depending on each other can cause hangs, crashes, or subtle broken states that are difficult to diagnose after the fact. Because manifests are readable without calling `init` (§7a), the engine can build the full dependency graph and run a cycle check *before* committing to initializing anything — turning a runtime hang into a load-time, named, refusable error.
 
